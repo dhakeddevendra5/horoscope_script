@@ -1,27 +1,12 @@
-"use strict";
+import { ZODIAC_SIGNS, SIGN_META, SIGN_PERSONALITY, TIME_WINDOWS, NUMBER_WORDS } from "../config/constants.js";
+import env from "../config/env.js";
+import { writeLog, writeFailureLog } from "../utils/logger.js";
+import { generateAIResponse } from "./ai/ai.service.js";
+import { buildHoroscopePrompt } from "../utils/prompt.js";
+import { runQA } from "../utils/qa.js";
+import { seededPick, makeSeed } from "../utils/helpers.js";
+import Horoscope from "../models/horoscope.model.js";
 
-const fs = require("fs");
-const path = require("path");
-const { CONFIG, ZODIAC_SIGNS, SIGN_META, SIGN_PERSONALITY, TIME_WINDOWS, NUMBER_WORDS } = require("./config");
-const { writeLog, writeFailureLog } = require("./logger");
-const { callOllama } = require("./ollama");
-const { buildHoroscopePrompt } = require("./prompt");
-const { runQA } = require("./qa");
-
-// ==================== SEEDED HELPERS ====================
-
-function seededPick(arr, seed) {
-    const s = (Math.imul(seed >>> 0, 1664525) + 1013904223) >>> 0;
-    return arr[s % arr.length];
-}
-
-function makeSeed(sign, targetDate, salt) {
-    return (ZODIAC_SIGNS.indexOf(sign) * 7919 +
-        targetDate.getDate() * 131 +
-        (targetDate.getMonth() + 1) * 37 +
-        (targetDate.getFullYear() % 100) * 17 +
-        salt) >>> 0;
-}
 
 // ==================== SECTION FIELDS ====================
 
@@ -40,7 +25,6 @@ function extractJSON(rawResponse) {
         .replace(/```\s*/g, "")
         .trim();
 
-    // Strategy 1: brace-matching walk to find the outermost complete object
     const start = cleaned.indexOf("{");
     if (start !== -1) {
         let depth = 0;
@@ -66,14 +50,13 @@ function extractJSON(rawResponse) {
         }
     }
 
-    // Strategy 2: try fixing common small-model mistakes then parse
     const s2 = cleaned.indexOf("{");
     const e2 = cleaned.lastIndexOf("}");
     if (s2 !== -1 && e2 > s2) {
         try {
             const fixed = cleaned
                 .slice(s2, e2 + 1)
-                .replace(/,\s*([}\]])/g, "$1");   // trailing commas
+                .replace(/,\s*([}\]])/g, "$1");
             const obj = JSON.parse(fixed);
             obj.source = "production";
             return obj;
@@ -113,10 +96,6 @@ function buildSectionFallback(field, sign) {
 
 // ==================== NORMALIZE ====================
 
-/**
- * Auto-correct common small-model output problems so the object
- * can pass validation without a full retry.
- */
 function normalizeHoroscope(obj, sign, targetDate) {
     if (!obj || typeof obj !== "object") return obj;
 
@@ -124,7 +103,6 @@ function normalizeHoroscope(obj, sign, targetDate) {
     const meta = SIGN_META[sign];
     const p = SIGN_PERSONALITY[sign];
 
-    // ── Identity scalars ─────────────────────────────────────────────────────
     obj.zodiacSign = sign;
     obj.type = "daily";
     obj.day = targetDate.getDate();
@@ -136,7 +114,6 @@ function normalizeHoroscope(obj, sign, targetDate) {
     obj.luckyDay = obj.luckyDay || "Wednesday";
     obj.source = "production";
 
-    // ── Ratings ──────────────────────────────────────────────────────────────
     const ratingFields = [
         "overallRating", "physicalRating", "emotionalRating",
         "intellectualRating", "spiritualRating",
@@ -146,16 +123,13 @@ function normalizeHoroscope(obj, sign, targetDate) {
         if (!obj[f] || obj[f] === "") obj[f] = defaults[i];
     });
 
-    // ── compatibilitySign ────────────────────────────────────────────────────
     if (!obj.compatibilitySign) {
         obj.compatibilitySign = seededPick(meta.compatibility, makeSeed(sign, targetDate, 1));
     }
 
-    // ── Time windows ─────────────────────────────────────────────────────────
     if (!obj.bestTimeToday) obj.bestTimeToday = seededPick(TIME_WINDOWS.afternoon, makeSeed(sign, targetDate, 10));
     if (!obj.avoidTime) obj.avoidTime = seededPick(TIME_WINDOWS.noon, makeSeed(sign, targetDate, 60));
 
-    // ── luckyNumber ──────────────────────────────────────────────────────────
     if (typeof obj.luckyNumber === "number" || typeof obj.luckyNumber === "string") {
         const n = parseInt(obj.luckyNumber, 10);
         const safe = (n >= 1 && n <= 9) ? n : 7;
@@ -170,7 +144,6 @@ function normalizeHoroscope(obj, sign, targetDate) {
         obj.luckyNumber.string = obj.luckyNumber.string || NUMBER_WORDS[safe];
     }
 
-    // ── luckyColor ───────────────────────────────────────────────────────────
     if (typeof obj.luckyColor === "string") {
         const hex = /^#[0-9A-Fa-f]{6}$/.test(obj.luckyColor) ? obj.luckyColor : "#C94B2A";
         obj.luckyColor = { hexCode: hex, colorName: "Warm Amber" };
@@ -182,7 +155,6 @@ function normalizeHoroscope(obj, sign, targetDate) {
         if (!obj.luckyColor.colorName) obj.luckyColor.colorName = "Warm Amber";
     }
 
-    // ── Snippet / keyAdvice / mainContent / todaySolution ────────────────────
     if (!obj.snippet || obj.snippet.trim() === "")
         obj.snippet = `${sign} Horoscope Today: Your work energy is strong — use it deliberately. Relationships deepen through honest conversation. Financial patience outperforms quick decisions.`;
 
@@ -195,17 +167,14 @@ function normalizeHoroscope(obj, sign, targetDate) {
     if (!obj.todaySolution || obj.todaySolution.trim() === "")
         obj.todaySolution = `Wear ${obj.luckyColor.colorName} today to align with your planetary energy. Face east during your morning routine to receive maximum solar benefit. Repeat "Om Namah Shivaya" seven times before beginning work. Choose warm, light foods over heavy meals. Avoid cold drinks until after noon. Give your ${p.bodyZone} gentle attention — a short stretch or self-massage in the evening supports recovery.`;
 
-    // ── Section fields ───────────────────────────────────────────────────────
     for (const field of SECTION_FIELDS) {
         const fallback = buildSectionFallback(field, sign);
         const val = obj[field];
 
         if (typeof val === "string") {
-            // Model returned flat text — wrap into object
             const content = val.trim() || fallback.content;
             obj[field] = { ...fallback, content };
         } else if (val && typeof val === "object") {
-            // Object present — fill any missing/invalid keys
             if (!val.title || val.title.trim() === "") val.title = fallback.title;
             if (!val.content || val.content.trim() === "") val.content = fallback.content;
             if (!val.dashaTitle || val.dashaTitle.trim() === "") val.dashaTitle = fallback.dashaTitle;
@@ -218,16 +187,13 @@ function normalizeHoroscope(obj, sign, targetDate) {
                 if (!Array.isArray(val[arrKey])) {
                     val[arrKey] = fallback[arrKey];
                 } else {
-                    // Ensure at least 3 non-empty string items
-                    val[arrKey] = val[arrKey]
-                        .filter((item) => typeof item === "string" && item.trim() !== "");
+                    val[arrKey] = val[arrKey].filter((item) => typeof item === "string" && item.trim() !== "");
                     while (val[arrKey].length < 3) {
                         val[arrKey].push(fallback[arrKey][val[arrKey].length % 3]);
                     }
                 }
             }
         } else {
-            // Missing entirely
             obj[field] = { ...fallback };
         }
     }
@@ -301,101 +267,89 @@ async function generateHoroscope(sign, targetDate, index, total) {
     const dateStr = `${y}-${m}-${d}`;
 
     console.log(`  [${index}/${total}] 🔮 Generating ${sign} for ${dateStr}...`);
-    writeLog("INFO", `Generating ${sign} for ${dateStr} [${index}/${total}]`);
+    writeLog(dateStr, "INFO", `Generating ${sign} for ${dateStr} [${index}/${total}]`);
 
     const prompt = buildHoroscopePrompt(sign, targetDate);
     const retryNote = `\n\nIMPORTANT: Output ONLY a valid JSON object. Start with { and end with }. No markdown, no explanation, no extra text outside the JSON.`;
 
     for (let attempt = 1; attempt <= 2; attempt++) {
-        const raw = await callOllama(attempt === 1 ? prompt : prompt + retryNote);
+        const raw = await generateAIResponse(attempt === 1 ? prompt : prompt + retryNote);
         let obj = extractJSON(raw);
 
         if (!obj) {
-            writeLog("WARN", `${sign} attempt ${attempt}: no JSON found in response`);
+            writeLog(dateStr, "WARN", `${sign} attempt ${attempt}: no JSON found in response`);
             if (attempt === 1) { console.log(`  [${index}/${total}] ⚠  ${sign} — no JSON, retrying`); }
             continue;
         }
 
-        // Auto-fix before validating
         obj = normalizeHoroscope(obj, sign, targetDate);
         const reason = validateHoroscope(obj, sign, targetDate);
 
         if (reason) {
-            writeLog("WARN", `${sign} attempt ${attempt} still invalid after normalize: ${reason}`);
+            writeLog(dateStr, "WARN", `${sign} attempt ${attempt} still invalid after normalize: ${reason}`);
             if (attempt === 1) { console.log(`  [${index}/${total}] ⚠  ${sign} — retrying (${reason})`); }
             continue;
         }
 
         const { clean, leakReason, topicWarning } = runQA(obj, sign, targetDate);
         if (leakReason) {
-            writeLog("WARN", `${sign} attempt ${attempt} QA failed: ${leakReason}`);
+            writeLog(dateStr, "WARN", `${sign} attempt ${attempt} QA failed: ${leakReason}`);
             if (attempt === 1) { console.log(`  [${index}/${total}] ⚠  ${sign} — QA failed, retrying`); }
             continue;
         }
 
-        if (topicWarning) writeLog("WARN", `TOPIC DRIFT ${sign} ${dateStr}: ${topicWarning}`);
+        if (topicWarning) writeLog(dateStr, "WARN", `TOPIC DRIFT ${sign} ${dateStr}: ${topicWarning}`);
         console.log(`  [${index}/${total}] ✅ ${sign} — done${attempt === 2 ? " (retry)" : ""}`);
-        writeLog("INFO", `SUCCESS${attempt === 2 ? " (retry)" : ""}: ${sign} for ${dateStr}`);
+        writeLog(dateStr, "INFO", `SUCCESS${attempt === 2 ? " (retry)" : ""}: ${sign} for ${dateStr}`);
         return clean;
     }
 
-    // ── Both LLM attempts failed — build fully from fallback ────────────────
-    writeLog("WARN", `${sign} LLM output unusable — using normalized fallback object`);
+    writeLog(dateStr, "WARN", `${sign} LLM output unusable — using normalized fallback object`);
     console.log(`  [${index}/${total}] ⚠  ${sign} — model output unusable, using fallback`);
 
     const fallback = normalizeHoroscope({ zodiacSign: sign }, sign, targetDate);
     const finalCheck = validateHoroscope(fallback, sign, targetDate);
     if (finalCheck) {
-        writeLog("ERROR", `FAILED: ${sign} ${dateStr} — fallback invalid: ${finalCheck}`);
+        writeLog(dateStr, "ERROR", `FAILED: ${sign} ${dateStr} — fallback invalid: ${finalCheck}`);
         writeFailureLog(targetDate, sign, finalCheck);
         throw new Error(`Failed to generate horoscope for ${sign} on ${dateStr}`);
     }
     return fallback;
 }
 
-// ==================== BATCH SAVE ====================
+// ==================== BATCH SAVE TO MONGODB ====================
 
-function saveHoroscopesForDate(batchResults, targetDate) {
-    fs.mkdirSync(CONFIG.outputDir, { recursive: true });
-
+async function saveHoroscopesForDate(batchResults, targetDate) {
     const y = targetDate.getFullYear();
     const m = String(targetDate.getMonth() + 1).padStart(2, "0");
     const d = String(targetDate.getDate()).padStart(2, "0");
-    const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-    const filename = `${y}-${m}-${d}.json`;
-    const filepath = path.join(CONFIG.outputDir, filename);
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-
-    let existingHoroscopes = [];
-    if (fs.existsSync(filepath)) {
-        try {
-            const existing = JSON.parse(fs.readFileSync(filepath, "utf8"));
-            existingHoroscopes = Array.isArray(existing.horoscopes) ? existing.horoscopes : [];
-        } catch { writeLog("WARN", `Could not parse ${filename}, starting fresh`); }
-    }
+    const dateStr = `${y}-${m}-${d}`;
 
     const newSignData = batchResults.filter((r) => r.success).map((r) => r.data);
-    const newSigns = new Set(newSignData.map((h) => h.zodiacSign));
-    const merged = [
-        ...existingHoroscopes.filter((h) => !newSigns.has(h.zodiacSign)),
-        ...newSignData,
-    ].sort((a, b) => ZODIAC_SIGNS.indexOf(a.zodiacSign) - ZODIAC_SIGNS.indexOf(b.zodiacSign));
+    let savedCount = 0;
+    
+    for (const data of newSignData) {
+        try {
+            await Horoscope.findOneAndUpdate(
+                { 
+                    zodiacSign: data.zodiacSign, 
+                    day: data.day, 
+                    month: data.month, 
+                    year: data.year 
+                },
+                { $set: data },
+                { upsert: true, new: true }
+            );
+            savedCount++;
+        } catch (error) {
+            writeLog(dateStr, "ERROR", `Failed to save ${data.zodiacSign} to DB: ${error.message}`);
+            console.error(`  ❌ DB Save Failed for ${data.zodiacSign}: ${error.message}`);
+        }
+    }
 
-    const output = {
-        generatedAt: new Date().toISOString(),
-        targetDate: { day: targetDate.getDate(), month: targetDate.getMonth() + 1, year: y, weekday: weekdays[targetDate.getDay()] },
-        isPast: targetDate < today,
-        isFuture: targetDate > today,
-        model: CONFIG.model,
-        totalSigns: ZODIAC_SIGNS.length,
-        successfulSigns: merged.length,
-        horoscopes: merged,
-    };
-
-    fs.writeFileSync(filepath, JSON.stringify(output, null, 2), "utf8");
-    writeLog("INFO", `Batch saved → ${filename} (${merged.length}/${ZODIAC_SIGNS.length} so far)`);
-    console.log(`  💾 Batch saved → ${filename} (${merged.length}/${ZODIAC_SIGNS.length} signs so far)`);
-    return { filepath, filename };
+    writeLog(dateStr, "INFO", `Batch saved to DB (${savedCount} signs)`);
+    console.log(`  💾 Batch saved to DB (${savedCount} signs)`);
+    return savedCount;
 }
 
 // ==================== DATE RUNNER ====================
@@ -411,18 +365,18 @@ async function generateForDate(targetDate) {
 
     console.log(`\n📅 Generating horoscopes for ${dateStr} (${label})`);
     console.log(`🎯 ${ZODIAC_SIGNS.length} signs to generate\n`);
-    writeLog("INFO", `---- Starting ${dateStr} (${label}) ----`);
+    writeLog(dateStr, "INFO", `---- Starting ${dateStr} (${label}) ----`);
 
     let totalSuccess = 0, totalFailed = 0;
     const errors = [];
 
-    for (let i = 0; i < ZODIAC_SIGNS.length; i += CONFIG.concurrentLimit) {
-        const batchNum = Math.floor(i / CONFIG.concurrentLimit) + 1;
-        const totalBatches = Math.ceil(ZODIAC_SIGNS.length / CONFIG.concurrentLimit);
-        const batch = ZODIAC_SIGNS.slice(i, i + CONFIG.concurrentLimit);
+    for (let i = 0; i < ZODIAC_SIGNS.length; i += env.CONCURRENT_LIMIT) {
+        const batchNum = Math.floor(i / env.CONCURRENT_LIMIT) + 1;
+        const totalBatches = Math.ceil(ZODIAC_SIGNS.length / env.CONCURRENT_LIMIT);
+        const batch = ZODIAC_SIGNS.slice(i, i + env.CONCURRENT_LIMIT);
 
         console.log(`\n  📦 Batch ${batchNum}/${totalBatches}: ${batch.join(", ")}`);
-        writeLog("INFO", `Batch ${batchNum}/${totalBatches}: ${batch.join(", ")}`);
+        writeLog(dateStr, "INFO", `Batch ${batchNum}/${totalBatches}: ${batch.join(", ")}`);
 
         const batchResults = await Promise.all(
             batch.map((sign, idx) =>
@@ -438,23 +392,42 @@ async function generateForDate(targetDate) {
                 totalFailed++;
                 errors.push({ sign: r.sign, error: r.error });
                 console.log(`  ❌ ${r.sign} failed: ${r.error}`);
-                writeLog("ERROR", `FAILED: ${r.sign} ${dateStr} — ${r.error}`);
+                writeLog(dateStr, "ERROR", `FAILED: ${r.sign} ${dateStr} — ${r.error}`);
                 writeFailureLog(targetDate, r.sign, r.error);
             }
         }
 
-        saveHoroscopesForDate(batchResults, targetDate);
-        writeLog("INFO", `Batch ${batchNum}/${totalBatches} done: ${totalSuccess} total saved`);
+        await saveHoroscopesForDate(batchResults, targetDate);
+        writeLog(dateStr, "INFO", `Batch ${batchNum}/${totalBatches} done`);
         batchResults.length = 0;
 
-        if (i + CONFIG.concurrentLimit < ZODIAC_SIGNS.length) {
+        if (i + env.CONCURRENT_LIMIT < ZODIAC_SIGNS.length) {
             console.log(`\n  ⏳ Waiting 3 seconds...\n`);
             await new Promise((r) => setTimeout(r, 3000));
         }
     }
 
-    writeLog("INFO", `Finished ${dateStr}: ${totalSuccess} ok, ${totalFailed} failed`);
+    writeLog(dateStr, "INFO", `Finished ${dateStr}: ${totalSuccess} ok, ${totalFailed} failed`);
     return { totalSuccess, errors, targetDate };
 }
 
-module.exports = { generateHoroscope, generateForDate, saveHoroscopesForDate };
+// ==================== MULTI-DAY RUNNERS ====================
+
+async function generateForDateRange(startDate, endDate) {
+    let currentDate = new Date(startDate);
+    
+    while (currentDate <= endDate) {
+        await generateForDate(new Date(currentDate));
+        // Add 1 day
+        currentDate.setDate(currentDate.getDate() + 1);
+    }
+}
+
+async function generateForMonth(year, month) {
+    const startDate = new Date(year, month - 1, 1);
+    const endDate = new Date(year, month, 0); // 0 gets the last day of the previous month (which is the current month here)
+    
+    await generateForDateRange(startDate, endDate);
+}
+
+export { generateHoroscope, generateForDate, saveHoroscopesForDate, generateForDateRange, generateForMonth };

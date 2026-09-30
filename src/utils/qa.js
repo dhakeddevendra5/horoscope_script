@@ -1,69 +1,29 @@
-"use strict";
-
-/**
- * qa.js — Quality Assurance post-processor
- *
- * Pass 1 — PROMPT LEAK + BRACKET DETECTION (reject & retry if found)
- * Pass 2 — GENERIC PHRASE REPLACEMENT (100+ pool variants, seeded)
- * Pass 3 — FIELD TOPIC VALIDATION (cross-section contamination check)
- * Pass 4 — GRAMMAR + ARTIFACT CLEANUP
- */
-
-const {
+import {
     PROMPT_LEAK_PATTERNS,
     PHRASE_POOLS,
     FIELD_TOPIC_RULES,
-    ZODIAC_SIGNS,
-} = require("./config");
+} from "../config/constants.js";
 
-// ── Section fields that are now nested objects ─────────────────────────────
+import { seededPick, makeSeed } from "./helpers.js";
+
 const SECTION_FIELDS = [
     "emotion", "profession", "career", "love",
     "family", "health", "moneyAndFinance", "travel",
 ];
 
-// ── Simple top-level text fields ───────────────────────────────────────────
 const SCALAR_TEXT_FIELDS = [
     "snippet", "keyAdvice", "mainContent", "todaySolution",
 ];
 
-// ── All text we will scan for prompt leaks (flattened from nested + scalar) ─
-// Assembled dynamically in detectPromptLeak below.
-
-// ── Seeded picker ──────────────────────────────────────────────────────────
-function seededPick(arr, seed) {
-    const s = (Math.imul(seed >>> 0, 1664525) + 1013904223) >>> 0;
-    return arr[s % arr.length];
-}
-
-function makeSeed(sign, targetDate, salt) {
-    return (ZODIAC_SIGNS.indexOf(sign) * 7919 +
-        targetDate.getDate() * 131 +
-        (targetDate.getMonth() + 1) * 37 +
-        (targetDate.getFullYear() % 100) * 17 +
-        salt) >>> 0;
-}
-
-// ==================== PASS 1 — PROMPT LEAK + BRACKET DETECTION ====================
-
-/**
- * Collect all string values from the object for scanning.
- * Handles both scalar fields and the new nested section objects.
- *
- * @param {object} obj
- * @returns {Array<{path: string, value: string}>}
- */
 function collectAllStrings(obj) {
     const result = [];
 
-    // Scalar text fields
     for (const field of SCALAR_TEXT_FIELDS) {
         if (typeof obj[field] === "string") {
             result.push({ path: field, value: obj[field] });
         }
     }
 
-    // Nested section fields
     for (const field of SECTION_FIELDS) {
         const section = obj[field];
         if (!section || typeof section !== "object") continue;
@@ -103,8 +63,6 @@ function detectPromptLeak(obj) {
     return null;
 }
 
-// ==================== PASS 2 — GENERIC PHRASE REPLACEMENT ====================
-
 const GENERIC_PHRASE_MAP = [
     { pattern: /career momentum sharpens|career momentum improves|career focus sharpens/gi, pool: "careerMomentum", salt: 100 },
     { pattern: /love connections? deepen|emotional connections? deepen/gi, pool: "loveConnection", salt: 200 },
@@ -135,19 +93,12 @@ function replaceGenericPhrases(text, sign, targetDate, saltOffset) {
     return out;
 }
 
-// ==================== PASS 3 — FIELD TOPIC VALIDATION ====================
-
-/**
- * Check that each section's content stays on its assigned topic.
- * Inspects content and dashaContent strings inside section objects.
- */
 function detectOffTopicContent(obj) {
     const warnings = [];
     for (const [field, rule] of Object.entries(FIELD_TOPIC_RULES)) {
         const section = obj[field];
         if (!section || typeof section !== "object") continue;
 
-        // Check content and dashaContent
         const textToCheck = [section.content, section.dashaContent].filter(Boolean).join(" ");
         for (const pat of rule.offTopicPatterns) {
             if (pat.test(textToCheck)) {
@@ -158,8 +109,6 @@ function detectOffTopicContent(obj) {
     }
     return warnings.length > 0 ? warnings.join(" | ") : null;
 }
-
-// ==================== PASS 4 — GRAMMAR + ARTIFACT CLEANUP ====================
 
 function cleanGrammarArtifacts(text) {
     return text
@@ -179,23 +128,11 @@ function cleanGrammarArtifacts(text) {
         .trim();
 }
 
-// ==================== CLEAN A SECTION OBJECT ====================
-
-/**
- * Run Pass 2 + Pass 4 over all string-bearing fields in a section object.
- *
- * @param {object} section
- * @param {string} sign
- * @param {Date}   targetDate
- * @param {number} saltOffset  - unique per section so seeds differ
- * @returns {object}
- */
 function cleanSection(section, sign, targetDate, saltOffset) {
     if (!section || typeof section !== "object") return section;
 
     const cleaned = { ...section };
 
-    // String fields
     const stringKeys = ["title", "content", "dashaTitle", "dashaContent"];
     for (const key of stringKeys) {
         if (typeof cleaned[key] === "string") {
@@ -204,7 +141,6 @@ function cleanSection(section, sign, targetDate, saltOffset) {
         }
     }
 
-    // Array fields
     const arrayKeys = ["toDo", "toAvoid", "experience"];
     for (const key of arrayKeys) {
         if (Array.isArray(cleaned[key])) {
@@ -219,28 +155,12 @@ function cleanSection(section, sign, targetDate, saltOffset) {
     return cleaned;
 }
 
-// ==================== MAIN QA RUNNER ====================
-
-/**
- * Run all 4 QA passes on a parsed horoscope object.
- *
- * @param {object} obj
- * @param {string} sign
- * @param {Date}   targetDate
- * @returns {{
- *   clean: object|null,
- *   leakReason: string|null,
- *   topicWarning: string|null
- * }}
- */
 function runQA(obj, sign, targetDate) {
-    // Pass 1 — hard reject on leak or bracket
     const leakReason = detectPromptLeak(obj);
     if (leakReason) {
         return { clean: null, leakReason, topicWarning: null };
     }
 
-    // Pass 2 + 4 — clean scalar text fields
     const clean = { ...obj };
 
     SCALAR_TEXT_FIELDS.forEach((field, idx) => {
@@ -249,17 +169,15 @@ function runQA(obj, sign, targetDate) {
         clean[field] = cleanGrammarArtifacts(clean[field]);
     });
 
-    // Pass 2 + 4 — clean nested section fields
     SECTION_FIELDS.forEach((field, idx) => {
         if (clean[field] && typeof clean[field] === "object") {
             clean[field] = cleanSection(clean[field], sign, targetDate, (idx + 10) * 7);
         }
     });
 
-    // Pass 3 — topic validation (soft warning)
     const topicWarning = detectOffTopicContent(clean);
 
     return { clean, leakReason: null, topicWarning };
 }
 
-module.exports = { runQA };
+export { runQA };

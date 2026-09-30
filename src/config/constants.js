@@ -1,15 +1,4 @@
-"use strict";
-
-// ==================== CONFIGURATION ====================
-
-const CONFIG = {
-    ollamaUrl: "http://localhost:11434/api/generate",
-    model: "gemma4:31b-cloud",
-    outputDir: "C:/Users/gurucool/Desktop/horoscope",
-    temperature: 0.78,
-    maxRetries: 3,
-    concurrentLimit: 1,
-};
+// ==================== ZODIAC SIGNS ====================
 
 const ZODIAC_SIGNS = [
     "Aries", "Taurus", "Gemini", "Cancer",
@@ -462,8 +451,7 @@ const NUMBER_WORDS = {
     6: "Six", 7: "Seven", 8: "Eight", 9: "Nine",
 };
 
-module.exports = {
-    CONFIG,
+export {
     ZODIAC_SIGNS,
     SIGN_META,
     SIGN_PERSONALITY,

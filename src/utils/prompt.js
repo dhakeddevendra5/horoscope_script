@@ -1,21 +1,5 @@
-"use strict";
-
-const { SIGN_META, SIGN_PERSONALITY, TIME_WINDOWS, ZODIAC_SIGNS } = require("./config");
-
-// ==================== SEEDED PICKER ====================
-
-function seededPick(arr, seed) {
-    const s = (Math.imul(seed >>> 0, 1664525) + 1013904223) >>> 0;
-    return arr[s % arr.length];
-}
-
-function makeSeed(sign, targetDate, salt = 0) {
-    return (ZODIAC_SIGNS.indexOf(sign) * 7919 +
-        targetDate.getDate() * 131 +
-        (targetDate.getMonth() + 1) * 37 +
-        (targetDate.getFullYear() % 100) * 17 +
-        salt) >>> 0;
-}
+import { SIGN_META, SIGN_PERSONALITY, TIME_WINDOWS, ZODIAC_SIGNS } from "../config/constants.js";
+import { seededPick, makeSeed } from "./helpers.js";
 
 // ==================== NUMBER WORDS ====================
 
@@ -25,15 +9,7 @@ const NUMBER_WORDS = {
 };
 
 // ==================== PROMPT BUILDER ====================
-//
-// Three blocks kept deliberately compact for hermes3:8b (8 192-token window).
-// Prompt target: ~2 000 tokens.  Output target: ≤ 4 096 tokens.
-// Total stays well inside the 8 192 context limit.
-//
-// BLOCK A — subject context   (~300 tokens)
-// BLOCK B — writing rules     (~500 tokens, compressed from original ~900)
-// BLOCK C — JSON template     (~1 200 tokens, compressed from original ~2 000)
-//
+
 function buildHoroscopePrompt(sign, targetDate) {
     const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     const meta = SIGN_META[sign];
@@ -49,7 +25,6 @@ function buildHoroscopePrompt(sign, targetDate) {
         : tense === "future" ? "Future date — write in future tense."
             : "Today — write in present tense.";
 
-    // Pre-seeded time windows so the model never generates them
     const compat = seededPick(meta.compatibility, makeSeed(sign, targetDate, 1));
     const workTime = seededPick(TIME_WINDOWS.afternoon, makeSeed(sign, targetDate, 10));
     const loveTime = seededPick(TIME_WINDOWS.evening, makeSeed(sign, targetDate, 20));
@@ -63,9 +38,6 @@ function buildHoroscopePrompt(sign, targetDate) {
     const luckyNum = (makeSeed(sign, targetDate, 99) % 9) + 1;
     const luckyWord = NUMBER_WORDS[luckyNum];
 
-    // ════════════════════════════════════════════════════════════════
-    // BLOCK A — SUBJECT CONTEXT
-    // ════════════════════════════════════════════════════════════════
     const blockA = `=== SUBJECT ===
 Sign: ${sign} | ${weekday} ${day}/${month}/${year} | ${tenseNote}
 Ruler: ${meta.ruler} | Element: ${meta.element} | Compatible: ${compat}
@@ -84,9 +56,6 @@ Time windows:
   Health peak=${healthPeak} | Health dip=${healthDip}
   Money=${moneyTime} | Family=${familyTime} | Travel=${travelTime} | Avoid=${avoidTime}`;
 
-    // ════════════════════════════════════════════════════════════════
-    // BLOCK B — WRITING RULES  (compressed ~45%)
-    // ════════════════════════════════════════════════════════════════
     const blockB = `=== RULES ===
 VOICE: Every sentence must be specific to ${sign}. Use "you/your". Never open any field with "On ${weekday}".
 
@@ -120,9 +89,6 @@ LENGTHS:
 
 OUTPUT: JSON only. Start with { end with }. No markdown, no explanation, no text outside the braces. No square brackets inside any string value.`;
 
-    // ════════════════════════════════════════════════════════════════
-    // BLOCK C — JSON TEMPLATE  (hints shortened ~50%)
-    // ════════════════════════════════════════════════════════════════
     const sec = (field, topic, time) =>
         `  "${field}": {
     "title": "<${sign} ${field} title 5-7 words>",
@@ -175,4 +141,4 @@ ${sec("travel", `${sign} journeys/commutes/movement`, travelTime)},
     return `${blockA}\n\n${blockB}\n\n${blockC}`;
 }
 
-module.exports = { buildHoroscopePrompt };
+export { buildHoroscopePrompt };
