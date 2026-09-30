@@ -7,6 +7,11 @@ import { runQA } from "../utils/qa.js";
 import { seededPick, makeSeed } from "../utils/helpers.js";
 import Horoscope from "../models/horoscope.model.js";
 
+let cancelFlag = false;
+
+export function stopGeneration() {
+    cancelFlag = true;
+}
 
 // ==================== SECTION FIELDS ====================
 
@@ -338,7 +343,7 @@ async function saveHoroscopesForDate(batchResults, targetDate) {
                     year: data.year 
                 },
                 { $set: data },
-                { upsert: true, new: true }
+                { upsert: true, returnDocument: 'after' }
             );
             savedCount++;
         } catch (error) {
@@ -369,8 +374,16 @@ async function generateForDate(targetDate) {
 
     let totalSuccess = 0, totalFailed = 0;
     const errors = [];
-
+    
+    // Reset flag if this is a single date run, but date range might have already set it false.
+    // For safety, we only break if it's true.
     for (let i = 0; i < ZODIAC_SIGNS.length; i += env.CONCURRENT_LIMIT) {
+        if (cancelFlag) {
+            console.log("🛑 Generation aborted by user.");
+            writeLog(dateStr, "INFO", "Generation aborted by user.");
+            break;
+        }
+
         const batchNum = Math.floor(i / env.CONCURRENT_LIMIT) + 1;
         const totalBatches = Math.ceil(ZODIAC_SIGNS.length / env.CONCURRENT_LIMIT);
         const batch = ZODIAC_SIGNS.slice(i, i + env.CONCURRENT_LIMIT);
@@ -397,6 +410,12 @@ async function generateForDate(targetDate) {
             }
         }
 
+        if (batchResults.length > 0 && batchResults.every(r => !r.success)) {
+            console.log("🛑 All items in batch failed. Auto-aborting generation.");
+            writeLog(dateStr, "ERROR", "All items in batch failed. Auto-aborting generation.");
+            cancelFlag = true;
+        }
+
         await saveHoroscopesForDate(batchResults, targetDate);
         writeLog(dateStr, "INFO", `Batch ${batchNum}/${totalBatches} done`);
         batchResults.length = 0;
@@ -414,9 +433,14 @@ async function generateForDate(targetDate) {
 // ==================== MULTI-DAY RUNNERS ====================
 
 async function generateForDateRange(startDate, endDate) {
+    cancelFlag = false; // Reset on new run
     let currentDate = new Date(startDate);
     
     while (currentDate <= endDate) {
+        if (cancelFlag) {
+            console.log("🛑 Date range generation aborted by user.");
+            break;
+        }
         await generateForDate(new Date(currentDate));
         // Add 1 day
         currentDate.setDate(currentDate.getDate() + 1);
@@ -424,10 +448,11 @@ async function generateForDateRange(startDate, endDate) {
 }
 
 async function generateForMonth(year, month) {
+    cancelFlag = false; // Reset on new run
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0); // 0 gets the last day of the previous month (which is the current month here)
     
     await generateForDateRange(startDate, endDate);
 }
 
-export { generateHoroscope, generateForDate, saveHoroscopesForDate, generateForDateRange, generateForMonth };
+export { generateHoroscope, generateForDate, saveHoroscopesForDate, generateForDateRange, generateForMonth, stopGeneration };

@@ -12,7 +12,7 @@ async function writeLog(targetDateStr, level, message, meta = {}) {
         await Log.findOneAndUpdate(
             { targetDate: targetDateStr },
             { $push: { messages: { level, message, meta } } },
-            { upsert: true, new: true }
+            { upsert: true, returnDocument: 'after' }
         );
     } catch (err) {
         console.error("Failed to write log to DB:", err.message);

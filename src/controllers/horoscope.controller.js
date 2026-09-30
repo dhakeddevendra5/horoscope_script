@@ -1,5 +1,5 @@
 import Horoscope from "../models/horoscope.model.js";
-import { generateForDate, generateForDateRange, generateForMonth } from "../services/horoscope.service.js";
+import { generateForDate, generateForDateRange, generateForMonth, stopGeneration } from "../services/horoscope.service.js";
 
 // Get horoscope for a specific sign and date
 export const getHoroscope = async (req, res) => {
@@ -101,6 +101,17 @@ export const generateHoroscopeMonth = async (req, res) => {
         res.json({ message: `Generation started for ${year}-${String(month).padStart(2, '0')}` });
     } catch (error) {
         console.error("Error starting month generation:", error);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Stop generation
+export const stopGenerationController = async (req, res) => {
+    try {
+        stopGeneration();
+        res.json({ message: "Generation stop signal sent. It will abort before the next batch or day." });
+    } catch (error) {
+        console.error("Error stopping generation:", error);
         res.status(500).json({ message: "Internal server error" });
     }
 };
