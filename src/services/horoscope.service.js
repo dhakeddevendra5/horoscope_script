@@ -9,7 +9,7 @@ import Horoscope from "../models/horoscope.model.js";
 
 let cancelFlag = false;
 
-export function stopGeneration() {
+function stopGeneration() {
     cancelFlag = true;
 }
 
