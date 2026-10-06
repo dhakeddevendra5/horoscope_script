@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import horoscopeModel from "../models/horoscope.model.js";
+import Log from "../models/log.model.js";
 import Horoscope from "../models/horoscope.model.js";
 import { generateForDate, generateForDateRange, generateForMonth, stopGeneration } from "../services/horoscope.service.js";
 
@@ -133,7 +133,7 @@ export const removeHoroscope = async (req, res) => {
       return res.status(400).json({ message: "Invalid ids found", invalidIds });
     }
 
-    const result = await horoscopeModel.deleteMany({ _id: { $in: ids } });
+    const result = await Horoscope.deleteMany({ _id: { $in: ids } });
 
     if (result.deletedCount === 0) {
       return res.status(404).json({ message: "No matching records found" });
@@ -145,6 +145,37 @@ export const removeHoroscope = async (req, res) => {
     });
   } catch (error) {
     console.error("removeHoroscope error:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+export const removeLogs = async (req, res) => {
+  try {
+    const { ids } = req.body;
+
+    // Validate input
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: "ids must be a non-empty array" });
+    }
+
+    // Reject invalid ObjectIds so Mongoose doesn't throw a CastError
+    const invalidIds = ids.filter((id) => !mongoose.Types.ObjectId.isValid(id));
+    if (invalidIds.length > 0) {
+      return res.status(400).json({ message: "Invalid ids found", invalidIds });
+    }
+
+    const result = await Log.deleteMany({ _id: { $in: ids } });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: "No matching records found" });
+    }
+
+    return res.status(200).json({
+      message: "Logs deleted successfully",
+      deletedCount: result.deletedCount,
+    });
+  } catch (error) {
+    console.error("removeLog error:", error);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
